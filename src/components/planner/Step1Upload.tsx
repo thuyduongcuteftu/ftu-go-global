@@ -1,0 +1,325 @@
+'use client';
+
+import { AcademicProfileFields } from './AcademicProfileFields';
+import React, { useState } from 'react';
+import * as XLSX from 'xlsx';
+import { useStudent } from '../../context/StudentContext';
+import { StudentCourse } from '../../types/curriculum';
+import { parseCurriculumRows } from '../../lib/curriculumParser';
+import { isCoursePassed, isTransferCandidate } from '../../engine/transferEligibility';
+
+export const Step1Upload: React.FC = () => {
+  const { profile, updateProfile, setCurrentStep, loadSampleProfile } = useStudent();
+  const [activeTab, setActiveTab] = useState<'EXCEL' | 'MANUAL'>('EXCEL');
+  const [manualText, setManualText] = useState('');
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [attachedFileName, setAttachedFileName] = useState<string | null>(null);
+
+  // File Upload Handler
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsProcessing(true);
+    setErrorMessage(null);
+
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const bstr = evt.target?.result;
+        const wb = XLSX.read(bstr, { type: 'binary' });
+        const wsName = wb.SheetNames[0];
+        const ws = wb.Sheets[wsName];
+
+        const rawData = XLSX.utils.sheet_to_json<any[]>(ws, { header: 1 });
+        if (rawData.length < 2) {
+          throw new Error('File không có đủ dữ liệu.');
+        }
+
+        const parsedCourses = parseCurriculumRows(rawData);
+
+        const passedCredits = parsedCourses
+          .filter(isCoursePassed)
+          .reduce((sum, c) => sum + c.credits, 0);
+
+        updateProfile({
+          courses: parsedCourses,
+          accumulatedCredits: passedCredits,
+          manualCourseCodes: [],
+          isProfileComplete: false
+        });
+
+        setAttachedFileName(file.name);
+        setIsProcessing(false);
+      } catch (err: any) {
+        setIsProcessing(false);
+        setErrorMessage(err.message || 'Lỗi đọc file Excel. Vui lòng thử lại.');
+      }
+    };
+    reader.onerror = () => {
+      setIsProcessing(false);
+      setErrorMessage('Không đọc được file. Vui lòng chọn lại file CTĐT.');
+    };
+    reader.readAsBinaryString(file);
+  };
+
+  // Manual Input Handler
+  const handleManualSubmit = () => {
+    if (!manualText.trim()) {
+      setErrorMessage('Vui lòng nhập ít nhất một mã môn học.');
+      return;
+    }
+
+    const rawCodes = manualText.split(/[\s,;\n]+/);
+    const cleanCodes = Array.from(
+      new Set(
+        rawCodes
+          .map(c => c.trim().toUpperCase())
+          .filter(c => c.length >= 2 && /^[A-Z0-9]+$/.test(c))
+      )
+    );
+
+    if (cleanCodes.length === 0) {
+      setErrorMessage('Không nhận diện được mã môn học hợp lệ (VD: KTE402, TIN314, PLU422).');
+      return;
+    }
+
+    const manualCourses: StudentCourse[] = cleanCodes.map(code => ({
+      courseCode: code,
+      courseName: '',
+      credits: 0,
+      isMandatory: true,
+      isTaken: false,
+      isPassed: false,
+      status: 'NOT_TAKEN',
+      dataStatus: 'NEEDS_VERIFICATION'
+    }));
+
+    updateProfile({
+      courses: manualCourses,
+      manualCourseCodes: cleanCodes,
+      accumulatedCredits: 0,
+      isProfileComplete: false
+    });
+
+    setCurrentStep(2);
+  };
+
+  const handleUseSample = () => {
+    loadSampleProfile();
+    setAttachedFileName('Hồ sơ mẫu (demo từ dữ liệu CTĐT)');
+  };
+
+  const courseCount = profile.courses.length;
+  const passedCredits = profile.courses.filter(isCoursePassed).reduce((sum, c) => sum + c.credits, 0);
+  const remainingCredits = profile.courses.filter(isTransferCandidate).reduce((sum, c) => sum + c.credits, 0);
+
+  return (
+    <div className="max-w-3xl mx-auto flex flex-col gap-6 animate-fade-in py-4">
+      {/* Header Section */}
+      <div className="text-center space-y-2">
+        <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-primary/10 text-primary font-label-sm text-xs font-bold">
+          <span className="material-symbols-outlined text-sm">school</span>
+          <span>Học kỳ II Năm học 2026 - 2027 (Kỳ S27)</span>
+        </div>
+        <h1 className="text-2xl sm:text-3xl font-bold text-on-surface tracking-tight">
+          Tải lên Chương trình đào tạo
+        </h1>
+        <p className="text-sm text-on-surface-variant max-w-xl mx-auto">
+          Hệ thống sẽ đối chiếu các môn học chưa hoàn thành với dữ liệu trường đối tác và môn tương đương đã được audit từ tài liệu S27.
+        </p>
+      </div>
+
+      {/* Segmented Switcher */}
+      <div className="flex justify-center">
+        <div className="bg-surface-container-high p-1 rounded-full inline-flex border border-surface-container">
+          <button
+            type="button"
+            onClick={() => setActiveTab('EXCEL')}
+            className={`flex items-center gap-2 px-5 py-2 rounded-full text-sm font-semibold transition-all ${
+              activeTab === 'EXCEL'
+                ? 'bg-surface-container-lowest text-primary shadow-sm font-bold'
+                : 'text-on-surface-variant hover:text-on-surface'
+            }`}
+          >
+            <span className="material-symbols-outlined text-base">upload_file</span>
+            <span>Tải file Excel</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('MANUAL')}
+            className={`flex items-center gap-2 px-5 py-2 rounded-full text-sm font-semibold transition-all ${
+              activeTab === 'MANUAL'
+                ? 'bg-surface-container-lowest text-primary shadow-sm font-bold'
+                : 'text-on-surface-variant hover:text-on-surface'
+            }`}
+          >
+            <span className="material-symbols-outlined text-base">edit_note</span>
+            <span>Nhập mã môn</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Error Alert */}
+      {errorMessage && (
+        <div className="bg-rose-50 border border-rose-200 text-rose-800 rounded-2xl p-4 text-xs font-medium flex items-center justify-between shadow-xs">
+          <div className="flex items-center gap-2">
+            <span className="material-symbols-outlined text-rose-600 text-lg">error</span>
+            <span>{errorMessage}</span>
+          </div>
+          <button onClick={() => setErrorMessage(null)} className="text-rose-700 font-bold hover:underline">
+            Đóng
+          </button>
+        </div>
+      )}
+
+      {/* Main Card */}
+      {activeTab === 'EXCEL' ? (
+        <div className="bg-surface-container-lowest rounded-3xl p-6 sm:p-8 shadow-sm border border-surface-container/80 flex flex-col gap-6">
+          {/* Cute 3D Mascot Greeting Bubble */}
+          <div className="bg-primary-fixed/30 border border-primary/20 rounded-2xl p-4 flex items-center gap-4">
+            <div className="relative w-14 h-14 rounded-2xl overflow-hidden shadow-sm shrink-0 border-2 border-white">
+              <img
+                src="/images/mascot_advisor.jpg"
+                alt="3D Advisor Mascot"
+                className="w-full h-full object-cover"
+              />
+            </div>
+            <div className="text-xs">
+              <p className="font-bold text-primary">Trợ lý Cố vấn Học vụ FTU 🎓</p>
+              <p className="text-on-surface-variant mt-0.5 leading-relaxed">
+                Xin chào FTUer! Hãy upload File excel “Chương trình đào tạo” của bạn (download từ FTUgate) vào đây, mình sẽ tự động đối soát và tìm ngay những trường phù hợp với bạn nhé!
+              </p>
+            </div>
+          </div>
+
+          {/* Dropzone with 3D Icon */}
+          <div className="relative group bg-surface-container-low/50 hover:bg-surface-container-low rounded-2xl p-8 transition-all duration-200 border-2 border-dashed border-primary/30 hover:border-primary flex flex-col items-center justify-center text-center">
+            <input
+              id="fileUploadInput"
+              type="file"
+              accept=".xlsx,.xls"
+              onChange={handleFileUpload}
+              className="hidden"
+            />
+            <div className="relative w-16 h-16 mb-3 rounded-2xl overflow-hidden shadow-md group-hover:scale-110 transition-transform animate-float">
+              <img
+                src="/images/3d_checklist.jpg"
+                alt="3D Checklist Icon"
+                className="w-full h-full object-cover"
+              />
+            </div>
+            <h3 className="text-base font-bold text-on-surface mb-1">
+              Kéo thả file bảng điểm vào đây
+            </h3>
+            <p className="text-xs text-on-surface-variant max-w-sm mb-5">
+              Hỗ trợ định dạng <strong>.xlsx, .xls</strong> theo template hồ sơ trong <span className="text-primary font-medium">public/templates</span>
+            </p>
+
+            <div className="flex flex-wrap items-center justify-center gap-3">
+              <label
+                htmlFor="fileUploadInput"
+                className="px-5 py-2.5 rounded-full bg-primary text-on-primary text-sm font-bold shadow-sm hover:bg-primary-container transition-all cursor-pointer inline-flex items-center gap-2"
+              >
+                <span className="material-symbols-outlined text-base">folder_open</span>
+                <span>{isProcessing ? 'Đang đọc dữ liệu...' : 'Chọn file từ thiết bị'}</span>
+              </label>
+
+              <button
+                type="button"
+                onClick={handleUseSample}
+                className="px-4 py-2.5 rounded-full bg-white hover:bg-surface-container text-on-surface text-sm font-semibold transition-all border border-surface-container inline-flex items-center gap-1.5 shadow-xs"
+              >
+                <span className="material-symbols-outlined text-base text-primary">bolt</span>
+                <span>Dùng thử hồ sơ mẫu</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Active File Loaded Feedback */}
+          {courseCount > 0 && (
+            <div className="bg-emerald-50/80 border border-emerald-200/80 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0">
+                  <span className="material-symbols-outlined text-xl">check</span>
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-bold text-emerald-950 truncate max-w-xs sm:max-w-md">
+                      {attachedFileName || 'Hồ sơ đã nhập (chưa có tên file)'}
+                    </span>
+                    <span className="px-2 py-0.5 rounded-full bg-emerald-200 text-emerald-900 text-[11px] font-bold">
+                      Đã nạp
+                    </span>
+                  </div>
+                  <p className="text-xs text-emerald-800 mt-0.5">
+                    Đã nhận diện <strong>{courseCount} môn học</strong> ({passedCredits} tín chỉ đã đạt • {remainingCredits} tín chỉ mở để đổi)
+                  </p>
+                </div>
+              </div>
+
+            </div>
+          )}
+
+          {/* Primary Action Button */}
+          <div className="pt-2 flex flex-col sm:flex-row items-center justify-between gap-4 border-t border-surface-container">
+            <span className="text-xs text-on-surface-variant flex items-center gap-1">
+              <span className="material-symbols-outlined text-sm text-emerald-600">lock</span>
+              Dữ liệu được xử lý trực tiếp trên trình duyệt, không lưu trữ công khai.
+            </span>
+
+            <button
+              type="button"
+              disabled={courseCount === 0}
+              onClick={() => setCurrentStep(2)}
+              className="w-full sm:w-auto px-7 py-3 rounded-full bg-primary text-on-primary text-sm font-bold shadow-md hover:bg-primary-container transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <span>Tiếp tục: Rà soát môn học</span>
+              <span className="material-symbols-outlined text-base">arrow_forward</span>
+            </button>
+          </div>
+        </div>
+      ) : (
+        /* Manual Input Mode */
+        <div className="bg-surface-container-lowest rounded-3xl p-6 sm:p-8 shadow-sm border border-surface-container/80 flex flex-col gap-5">
+          <AcademicProfileFields />
+
+          <div className="flex flex-col gap-1.5 pt-1">
+            <div className="flex justify-between items-center">
+              <label className="text-xs font-bold text-on-surface">Mã học phần dự định quy đổi:</label>
+              <button
+                type="button"
+                onClick={() => setManualText('KTE402, KTE408, TIN314, PLU422, KTE410, TCH341')}
+                className="text-xs text-primary font-semibold hover:underline"
+              >
+                Điền mẫu gợi ý
+              </button>
+            </div>
+            <textarea
+              rows={3}
+              value={manualText}
+              onChange={(e) => setManualText(e.target.value)}
+              placeholder="VD: KTE402, KTE408, TIN314, PLU422, KTE410, TCH341"
+              className="w-full p-3.5 rounded-xl border border-surface-container bg-surface-container-low text-xs font-mono text-on-surface focus:bg-white focus:outline-none focus:ring-2 focus:ring-primary transition-all"
+            />
+            <p className="text-[11px] text-amber-700">
+              Nhập mã môn chỉ tạo hồ sơ nháp cần xác minh; hệ thống không tự suy đoán tên môn hoặc số tín chỉ.
+            </p>
+          </div>
+
+          <div className="pt-3 flex justify-end border-t border-surface-container">
+            <button
+              type="button"
+              onClick={handleManualSubmit}
+              className="px-6 py-2.5 rounded-full bg-primary text-on-primary text-sm font-bold hover:bg-primary-container transition-all shadow-sm flex items-center gap-2"
+            >
+              <span>Xác nhận & Tiếp tục</span>
+              <span className="material-symbols-outlined text-base">arrow_forward</span>
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
